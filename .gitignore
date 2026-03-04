@@ -3,3 +3,9 @@ src/
 .claude/
 *.pem
 skills/*/images/
+src/
+.venv/
+.claude/
+*.pem
+skills/*/images/
+docs/
