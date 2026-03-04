@@ -14,6 +14,8 @@ Usage:
 
 import argparse
 import asyncio
+import base64
+import io
 import logging
 import sys
 import time
@@ -21,21 +23,10 @@ from pathlib import Path
 
 # Suppress verbose logs from dependencies
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("live_vlm_webui.vlm_service").setLevel(logging.WARNING)
 
 import cv2
+from openai import AsyncOpenAI
 from PIL import Image
-
-# live_vlm_webui must be installed (pip install live-vlm-webui or pip install -e .)
-try:
-    from live_vlm_webui.vlm_service import VLMService
-except ImportError:
-    print(
-        "[live-vlm-once] ERROR: live_vlm_webui not found. "
-        "Install with: pip install live-vlm-webui",
-        flush=True,
-    )
-    sys.exit(1)
 
 
 def list_cameras():
@@ -221,13 +212,10 @@ async def main(args):
     camera_index = args.camera if args.camera is not None else find_builtin_camera()
     print(f"[live-vlm-once] Using camera index {camera_index}", flush=True)
 
-    # Initialize VLM service (shared for all captures)
-    vlm_service = VLMService(
-        model=args.model,
-        api_base=api_base,
+    # Initialize OpenAI-compatible client
+    client = AsyncOpenAI(
+        base_url=api_base,
         api_key=args.api_key or "EMPTY",
-        prompt=args.prompt,
-        max_tokens=args.max_tokens,
     )
 
     # Open camera
@@ -285,10 +273,28 @@ async def main(args):
         print(f"[live-vlm-once] Analyzing with {args.model}...", flush=True)
         start_time = time.perf_counter()
 
+        # Encode image as base64 JPEG
+        buf = io.BytesIO()
+        pil_image.save(buf, format="JPEG", quality=85)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+
         result = ""
         for attempt in range(3):
             try:
-                result = await vlm_service.analyze_image(pil_image)
+                response = await client.chat.completions.create(
+                    model=args.model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": args.prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                            ],
+                        }
+                    ],
+                    max_tokens=args.max_tokens,
+                )
+                result = response.choices[0].message.content or ""
                 if result and not result.startswith("Error:"):
                     break
                 print(f"[live-vlm-once] Empty/error response, retrying ({attempt+1}/3)...", flush=True)
